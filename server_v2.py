@@ -1,9 +1,18 @@
 import subprocess
 import json
+import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
+
+# Configure logging
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[logging.StreamHandler(), logging.FileHandler("server.log")],
+)
+logger = logging.getLogger(__name__)
 
 
 # Define Pydantic model for request validation
@@ -129,6 +138,8 @@ app.add_middleware(
 
 async def run_subprocess(request_data: TestRequest) -> TestResultsResponse:
     try:
+        logger.info(f"Starting subprocess with request data: {request_data}")
+
         result = subprocess.run(
             ["python", "test_agent.py"],
             input=json.dumps(request_data.model_dump()),
@@ -138,70 +149,85 @@ async def run_subprocess(request_data: TestRequest) -> TestResultsResponse:
             stderr=subprocess.STDOUT,
         )
 
-        print("Subprocess output:", result.stdout)
+        logger.debug(f"Subprocess output: {result.stdout}")
+        logger.debug(f"Return code: {result.returncode}")
 
         if result.returncode != 0:
-            return {"error in return code": result.stdout}
+            logger.error(f"Subprocess failed with return code {result.returncode}")
+            return {"error": f"Subprocess error: {result.stdout}"}
 
         try:
             start_string = '{"output": '
             json_start = result.stdout.find(start_string)
 
             if json_start == -1:
-                return {"error": "JSON start not found"}
+                logger.error("JSON start marker not found in subprocess output")
+                return {"error": "JSON start not found in subprocess output"}
 
             json_output = result.stdout[json_start:]
-            # print("JSON Output:")
-            # print(json_output)
+            logger.debug(f"Parsed JSON output: {json_output}")
+
             output_data = json.loads(json_output)
             return output_data
 
         except json.JSONDecodeError as e:
-            # print("Failed to parse JSON, raw JSON: ", result.stdout)
-            return {"error": str(e)}
+            logger.error(f"Failed to parse JSON from subprocess output: {e}")
+            logger.debug(f"Raw subprocess output: {result.stdout}")
+            return {"error": f"JSON parse error: {str(e)}"}
 
     except Exception as e:
+        logger.error(f"Unexpected error in run_subprocess: {str(e)}", exc_info=True)
         return {"error": str(e)}
 
 
 @app.post("/runTests", response_model=TestResultsResponse)
 async def run_tests(request_data: TestRequest):
+    logger.info("Received /runTests request")
+    logger.debug(f"Request data: {request_data}")
 
     if not request_data.tests:
+        logger.error("No tests provided in request")
         return TestResultsResponse(result=[], error="No tests provided")
 
     if not request_data.agent_type:
+        logger.error("Agent type not provided in request")
         return TestResultsResponse(result=[], error="Agent type is required")
 
     if not request_data.phone_number:
+        logger.error("Phone number not provided for inbound agent")
         return TestResultsResponse(
             result=[], error="Phone number is required for inbound agent"
         )
 
     try:
         result = await run_subprocess(request_data)
+        logger.debug(f"Subprocess result: {result}")
 
         # Check if result is an error response
         if isinstance(result, dict) and "error" in result:
+            logger.error(f"Error from subprocess: {result['error']}")
             return TestResultsResponse(result=[], error=result["error"])
 
         # Check if result has output
         if isinstance(result, dict) and "output" in result:
+            logger.info("Successfully processed test request")
             return TestResultsResponse(result=result["output"], error=None)
 
         # Fallback error if response format is unexpected
+        logger.error(f"Unexpected response format from subprocess: {result}")
         return TestResultsResponse(
             result=[], error="Unexpected response format from subprocess"
         )
 
     except Exception as e:
-        print("Exception: ", str(e))
+        logger.error(f"Exception in run_tests: {str(e)}", exc_info=True)
         return TestResultsResponse(result=[], error=str(e))
 
 
 if __name__ == "__main__":
     import uvicorn
 
+    logger.info("Starting server on port 5001")
     uvicorn.run(app, host="0.0.0.0", port=5001)
 
 # run_result = run_tests(test_request_data)

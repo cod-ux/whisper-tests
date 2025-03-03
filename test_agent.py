@@ -50,12 +50,10 @@ def serialize_test_results(test_result):
                     [
                         {
                             "name": eval.name,
-                            "passed": eval.result.passed if eval.result else False,
-                            "reason": (
-                                eval.result.reason if eval.result else "Unknown reason"
-                            ),
+                            "passed": eval.passed if eval else False,
+                            "reason": (eval.reason if eval else "Unknown reason"),
                         }
-                        for eval in test_result.test.scenario.evaluations
+                        for eval in test_result.evaluation_results.evaluation_results
                     ]
                     if test_result.evaluation_results
                     else []
@@ -114,7 +112,8 @@ async def run_tests(main_data):
                 agent = Agent(name=test["agent_name"], prompt=test["agent_description"])
                 scenario = Scenario(
                     name=test["scenario_name"],
-                    prompt=test["scenario_description"],
+                    prompt=test["scenario_description"]
+                    + "\n If you reach voicemail, end the call immediately.",
                     evaluations=[
                         Evaluation(
                             name=e["eval_name"], prompt=e["eval_success_criteria"]
@@ -128,10 +127,10 @@ async def run_tests(main_data):
             return {"error": f"Missing required field in test data: {str(e)}"}
         except Exception as e:
             logger.error(f"Failed to load tests: {str(e)}")
-            return {"error": f"Failed to load tests: {str(e)}"}
+            return {"error": f"[Subprocess]Failed to load tests: {str(e)}"}
 
         if not loaded_tests:
-            return {"error": "No valid tests were loaded"}
+            return {"error": "[Subprocess] No valid tests were loaded"}
 
         # Create test runner
         try:
@@ -142,8 +141,8 @@ async def run_tests(main_data):
                 evaluator=LocalEvaluator(model="gpt-4o"),
             )
         except Exception as e:
-            logger.error(f"Failed to create test runner: {str(e)}")
-            return {"error": f"Failed to create test runner: {str(e)}"}
+            logger.error(f"[Subprocess] Failed to create test runner: {str(e)}")
+            return {"error": f"[Subprocess] Failed to create test runner: {str(e)}"}
 
         for test in loaded_tests:
             test_runner.add_test(test)
@@ -157,10 +156,10 @@ async def run_tests(main_data):
                     phone_number=phone_number, type=TestRunner.OUTBOUND
                 )
             else:
-                return {"error": "Unsupported agent type"}
+                return {"error": "[Subprocess] Unsupported agent type"}
 
             if not test_results:
-                return {"error": "Test results were empty"}
+                return {"error": "[Subprocess] Test results were empty"}
 
             logger.info("Tests completed successfully")
             serialized_results = [
@@ -174,20 +173,26 @@ async def run_tests(main_data):
 
     except Exception as e:
         logger.error(f"Unexpected error: {str(e)}", exc_info=True)
-        return {"error": f"Unexpected error: {str(e)}"}
+        return {"error": f"[Subprocess] Unexpected error: {str(e)}"}
 
 
 if __name__ == "__main__":
     try:
         raw_input = sys.stdin.read()
         if not raw_input:
-            print(json.dumps({"error": "No input received"}), flush=True)
+            print(json.dumps({"error": "[Subprocess] No input received"}), flush=True)
             sys.exit(1)
 
         main_data = json.loads(raw_input)
         output = asyncio.run(run_tests(main_data))
         print(json.dumps(output), flush=True)
     except json.JSONDecodeError as e:
-        print(json.dumps({"error": f"Invalid JSON input: {str(e)}"}), flush=True)
+        print(
+            json.dumps({"error": f"[Subprocess] Invalid JSON input: {str(e)}"}),
+            flush=True,
+        )
     except Exception as e:
-        print(json.dumps({"error": f"Failed to process input: {str(e)}"}), flush=True)
+        print(
+            json.dumps({"error": f"[Subprocess] Failed to process input: {str(e)}"}),
+            flush=True,
+        )
