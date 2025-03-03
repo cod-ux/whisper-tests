@@ -136,12 +136,12 @@ app.add_middleware(
 )
 
 
-async def run_subprocess(request_data: TestRequest) -> TestResultsResponse:
+async def run_inbound_subprocess(request_data: TestRequest) -> TestResultsResponse:
     try:
         logger.info(f"Starting subprocess with request data: {request_data}")
 
         result = subprocess.run(
-            ["python", "test_agent.py"],
+            ["python", "test_inbound.py"],
             input=json.dumps(request_data.model_dump()),
             text=True,
             encoding="utf-8",
@@ -176,9 +176,53 @@ async def run_subprocess(request_data: TestRequest) -> TestResultsResponse:
             return {"error": f"JSON parse error: {str(e)}"}
 
     except Exception as e:
-        logger.error(f"Unexpected error in run_subprocess: {str(e)}", exc_info=True)
+        logger.error(f"Unexpected error in run_inbound_subprocess: {str(e)}", exc_info=True)
         return {"error": str(e)}
 
+async def run_outbound_subprocess(request_data: TestRequest) -> TestResultsResponse:
+    try:
+        logger.info(f"Starting subprocess with request data: {request_data}")
+
+        result = subprocess.run(
+            ["python", "test_outbound.py"],
+            input=json.dumps(request_data.model_dump()),
+            text=True,
+            encoding="utf-8",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+
+        logger.debug(f"Subprocess output: {result.stdout}")
+        logger.debug(f"Return code: {result.returncode}")
+
+        try:
+            start_string = '{"output": '
+            json_start = result.stdout.find(start_string)
+
+            if json_start == -1:
+                logger.error("JSON start marker not found in subprocess output")
+                return {"error": "JSON start not found in subprocess output"}
+
+            json_output = result.stdout[json_start:]
+            logger.debug(f"Parsed JSON output: {json_output}")
+
+            output_data = json.loads(json_output)
+            return output_data
+
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse JSON from subprocess output: {e}")
+            logger.debug(f"Raw subprocess output: {result.stdout}")
+            return {"error": f"JSON parse error: {str(e)}"}
+
+        if result.returncode != 0:
+            logger.error(f"Subprocess failed with return code {result.returncode}")
+            return {"error": f"Subprocess error: {result.stdout}"}
+
+        
+
+    except Exception as e:
+        logger.error(f"Unexpected error in run_inbound_subprocess: {str(e)}", exc_info=True)
+        return {"error": str(e)}
 
 @app.post("/runTests", response_model=TestResultsResponse)
 async def run_tests(request_data: TestRequest):
@@ -194,34 +238,58 @@ async def run_tests(request_data: TestRequest):
         return TestResultsResponse(result=[], error="Agent type is required")
 
     if not request_data.phone_number:
-        logger.error("Phone number not provided for inbound agent")
+        logger.error("Phone number not provided for voice agent")
         return TestResultsResponse(
-            result=[], error="Phone number is required for inbound agent"
+            result=[], error="Phone number is required for voice agent"
         )
 
-    try:
-        result = await run_subprocess(request_data)
-        logger.debug(f"Subprocess result: {result}")
+    if request_data.agent_type == "inbound":
+        try:
+            result = await run_inbound_subprocess(request_data)
+            logger.debug(f"Subprocess result: {result}")
 
-        # Check if result is an error response
-        if isinstance(result, dict) and "error" in result:
-            logger.error(f"Error from subprocess: {result['error']}")
-            return TestResultsResponse(result=[], error=result["error"])
+            # Check if result is an error response
+            if isinstance(result, dict) and "error" in result:
+                logger.error(f"Error from subprocess: {result['error']}")
+                return TestResultsResponse(result=[], error=result["error"])
 
-        # Check if result has output
-        if isinstance(result, dict) and "output" in result:
-            logger.info("Successfully processed test request")
-            return TestResultsResponse(result=result["output"], error=None)
+            # Check if result has output
+            if isinstance(result, dict) and "output" in result:
+                logger.info("Successfully processed test request")
+                return TestResultsResponse(result=result["output"], error=None)
 
-        # Fallback error if response format is unexpected
-        logger.error(f"Unexpected response format from subprocess: {result}")
-        return TestResultsResponse(
-            result=[], error="Unexpected response format from subprocess"
-        )
+            # Fallback error if response format is unexpected
+            logger.error(f"Unexpected response format from inbound subprocess: {result}")
+            return TestResultsResponse(
+                result=[], error="Unexpected response format from inbound subprocess"
+            )
 
-    except Exception as e:
-        logger.error(f"Exception in run_tests: {str(e)}", exc_info=True)
-        return TestResultsResponse(result=[], error=str(e))
+        except Exception as e:
+            logger.error(f"Exception in run_tests: {str(e)}", exc_info=True)
+            return TestResultsResponse(result=[], error=str(e))
+
+    if request_data.agent_type == "outbound":
+        try:
+            result = await run_outbound_subprocess(request_data)
+            logger.debug(f"Subprocess result: {result}")
+
+            if isinstance(result, dict) and "error" in result:
+                logger.error(f"Error from subprocess: {result}")
+                return TestResultsResponse(result=[], error=result["error"])
+
+            # Check if result has output
+            if isinstance(result, dict) and "output" in result:
+                logger.info("Successfully processed test request")
+                return TestResultsResponse(result=result["output"], error=None)
+
+            logger.error(f"Unexpected response format from outbound subprocess: {result}")
+            return TestResultsResponse(
+                result=[], error="Unexpected response format from outbound subprocess"
+            )
+
+        except Exception as e:
+            logger.error(f"Exception in run_tests: {str(e)}", exc_info=True)
+            return TestResultsResponse(result=[], error=str(e))
 
 
 if __name__ == "__main__":
