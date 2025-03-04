@@ -9,6 +9,18 @@ from fixa import Test, Agent, Scenario, Evaluation, TestRunner
 from fixa.evaluators import LocalEvaluator
 import ngrok
 import os, sys, json
+from openai import OpenAI
+
+
+class EvalResult(BaseModel):
+    name: str
+    passed: bool
+    reason: str
+
+
+class EvalResults(BaseModel):
+    evaluation_results: list[EvalResult]
+
 
 # Set up logging
 logging.basicConfig(
@@ -23,7 +35,50 @@ load_dotenv(override=True)
 
 print("Starting subprocess")
 
+client = OpenAI()
 TWILIO_PHONE_NUMBER = os.getenv("TWILIO_PHONE_NUMBER")
+
+
+def manual_evals(serial_result):
+    """Evaluate and serialize call data processing"""
+    logger.info("Evaluating call data manually...")
+
+    messages = serial_result["transcript"]
+    # if message role is "system" remove it from the list
+    messages = [message for message in messages if message["role"] != "system"]
+    messages = [
+        {
+            "role": "user" if message["role"] == "assistant" else "AI",
+            "content": message["content"],
+        }
+        for message in messages
+    ]
+    formatted_messages = str(messages)
+
+    evaluations = str(serial_result["test"]["scenario"]["evaluations"])
+
+    prompt = f"""
+    You are an expert at evaluating phone calls conducted by AI. You will be given a transcript of a call between an AI and a user, along with evaluation criteria to evaluate if the AI passed each of the evaluation criteria.
+
+    Here is the transcrpt of the call:
+    {formatted_messages}
+
+    Please evaluate if the AI passed each of the evaluation criteria in the provided list:
+    {evaluations}
+
+    For each evaluation result, return the eval_name, passed status, and reason for the evaluation.
+    """
+
+    logger.info("Parsing evaluation prompt...")
+    completion = client.beta.chat.completions.parse(
+        model="gpt-4o",
+        messages=[{"role": "user", "content": prompt}],
+        response_format=EvalResults,
+    )
+
+    evaluation_results = completion.choices[0].message.parsed
+
+    return evaluation_results.evaluation_results
 
 
 def serialize_test_results(test_result):
@@ -165,7 +220,52 @@ async def run_tests(main_data):
             serialized_results = [
                 serialize_test_results(test_result) for test_result in test_results
             ]
-            return {"output": serialized_results}
+
+            final_serial_results = []
+            for idx, result in enumerate(serialized_results):
+                if "evaluation_results" in result:
+                    if (
+                        result["evaluation_results"] == None
+                        or result["evaluation_results"] == []
+                    ):
+                        messages = result["transcript"]
+                        # need to check if role of messages is only system or not in an if statement
+                        if all(message["role"] == "system" for message in messages):
+                            final_serial_results.append(result)
+                            continue
+
+                        logger.info(
+                            f"Found an empty evaluation: {idx}/{len(serialized_results)}"
+                        )
+                        raw_eval_results = manual_evals(result)
+
+                        formatted_eval_results = [
+                            {
+                                "name": eval.name,
+                                "passed": eval.passed,
+                                "reason": eval.reason if eval else "Unknown reason",
+                            }
+                            for eval in raw_eval_results
+                        ]
+
+                        logger.info("Creating dictionary for evaluation results")
+                        result["evaluation_results"] = {}
+
+                        logger.info(
+                            "Assigning eval results second nest to formatted eval results"
+                        )
+
+                        result["evaluation_results"][
+                            "evaluation_results"
+                        ] = formatted_eval_results
+
+                        result["evaluation_results"]["extra_data"] = {}
+                        final_serial_results.append(result)
+
+                    else:
+                        final_serial_results.append(result)
+
+            return {"output": final_serial_results}
 
         except Exception as e:
             logger.error(f"Error running tests: {str(e)}", exc_info=True)
