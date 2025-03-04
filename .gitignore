@@ -19,3 +19,4 @@ coverage.xml
 migrations
 db.sqlite3
 .venv/
+server.log
