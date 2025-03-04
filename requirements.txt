@@ -21,9 +21,9 @@ deepgram-sdk==3.8.0
 deprecation==2.1.0
 distro==1.9.0
 environs==14.1.1
-fastapi==0.115.8
-fastapi_cors==0.0.6
-fixa-dev==0.0.4
+fastapi
+fastapi_cors
+fixa-dev
 Flask==3.0.2
 flask-cors==5.0.1
 flatbuffers==25.2.10
@@ -64,7 +64,7 @@ platformdirs==4.3.6
 posthog==3.11.0
 propcache==0.3.0
 protobuf==5.29.3
-pydantic==2.10.6
+pydantic
 pydantic_core==2.27.2
 PyJWT==2.10.1
 pyloudnorm==0.1.1
